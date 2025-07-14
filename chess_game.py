@@ -163,13 +163,19 @@ class ChessGame:
             # Короткая рокировка
             if to_col > from_col:
                 rook = self.board[from_row][7]
+                move_info['rook_had_moved'] = rook.has_moved if rook else None
                 self.board[from_row][5] = rook
                 self.board[from_row][7] = None
+                if rook:
+                    rook.has_moved = True
             # Длинная рокировка
             else:
                 rook = self.board[from_row][0]
+                move_info['rook_had_moved'] = rook.has_moved if rook else None
                 self.board[from_row][3] = rook
                 self.board[from_row][0] = None
+                if rook:
+                    rook.has_moved = True
         
         # Проверка на взятие на проходе
         elif piece.type == "pawn" and abs(to_col - from_col) == 1 and not captured_piece:
@@ -185,7 +191,12 @@ class ChessGame:
             'to_pos': (to_row, to_col),
             'captured_piece': self.board[to_row][to_col],
             'moved_piece': self.board[from_row][from_col],
-            'last_move': self.last_move
+            'last_move': self.last_move,
+            'piece_had_moved': piece.has_moved,
+            'was_castling': piece.type == "king" and abs(to_col - from_col) == 2,
+            'was_en_passant': piece.type == "pawn" and abs(to_col - from_col) == 1 and not self.board[to_row][to_col],
+            'en_passant_captured_pos': (from_row, to_col) if piece.type == "pawn" and abs(to_col - from_col) == 1 and not self.board[to_row][to_col] else None,
+            'rook_had_moved': None  # Будет установлено ниже для рокировки
         }
         self.move_history.append(move_info)
         self.undo_button.config(state='normal')
@@ -230,9 +241,12 @@ class ChessGame:
         if piece.type == "pawn" and (to_row == 0 or to_row == 7):
             self.promote_pawn(to_row, to_col)
         
-        # Проверка на мат после хода
-        if self.is_check(self.current_player) and self.is_checkmate():
-            messages.append(f"Мат! {'Белые' if piece.color == 'white' else 'Черные'} победили!")
+        # Проверка на мат или пат после хода
+        if self.is_checkmate():
+            if self.is_check(self.current_player):
+                messages.append(f"Мат! {'Белые' if piece.color == 'white' else 'Черные'} победили!")
+            else:
+                messages.append("Пат! Ничья!")
         
         # Показываем сообщения
         if messages:
@@ -347,6 +361,29 @@ class ChessGame:
         if (to_row, to_col) not in possible_moves:
             return False
 
+        # Специальная проверка для рокировки
+        if piece.type == "king" and abs(to_col - from_col) == 2:
+            # Проверяем, что король не находится под шахом
+            if self.is_check(self.current_player):
+                return False
+            
+            # Проверяем, что король не проходит через атакованные поля
+            step = 1 if to_col > from_col else -1
+            for c in range(from_col + step, to_col + step, step):
+                # Создаем временную доску с королем на промежуточной позиции
+                temp_board = [row[:] for row in self.board]
+                temp_board[from_row][c] = temp_board[from_row][from_col]
+                temp_board[from_row][from_col] = None
+                
+                # Проверяем, атакована ли эта позиция
+                for r in range(8):
+                    for col_check in range(8):
+                        enemy_piece = temp_board[r][col_check]
+                        if enemy_piece and enemy_piece.color != self.current_player:
+                            enemy_moves = enemy_piece.get_possible_moves(r, col_check, temp_board)
+                            if (from_row, c) in enemy_moves:
+                                return False
+
         # Проверяем, не подставляем ли мы короля под шах
         temp_board = [row[:] for row in self.board]
         temp_board[to_row][to_col] = temp_board[from_row][from_col]
@@ -407,6 +444,35 @@ class ChessGame:
         # Возвращаем фигуры на места
         self.board[from_row][from_col] = last_move['moved_piece']
         self.board[to_row][to_col] = last_move['captured_piece']
+        
+        # Восстанавливаем состояние has_moved
+        self.board[from_row][from_col].has_moved = last_move['piece_had_moved']
+        
+        # Обрабатываем специальные случаи
+        if last_move['was_castling']:
+            # Возвращаем ладью на место
+            if to_col > from_col:  # Короткая рокировка
+                rook = self.board[from_row][5]
+                self.board[from_row][7] = rook
+                self.board[from_row][5] = None
+                if rook:
+                    rook.has_moved = last_move['rook_had_moved'] if last_move['rook_had_moved'] is not None else False
+            else:  # Длинная рокировка
+                rook = self.board[from_row][3]
+                self.board[from_row][0] = rook
+                self.board[from_row][3] = None
+                if rook:
+                    rook.has_moved = last_move['rook_had_moved'] if last_move['rook_had_moved'] is not None else False
+        
+        if last_move['was_en_passant'] and last_move['en_passant_captured_pos']:
+            # Восстанавливаем взятую на проходе пешку
+            cap_row, cap_col = last_move['en_passant_captured_pos']
+            captured_pawn = Piece(
+                "black" if self.current_player == "white" else "white", 
+                "pawn"
+            )
+            captured_pawn.just_moved_two = True
+            self.board[cap_row][cap_col] = captured_pawn
         
         # Восстанавливаем подсветку предыдущего хода
         self.last_move = last_move['last_move']
